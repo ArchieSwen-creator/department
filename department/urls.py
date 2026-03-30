@@ -164,6 +164,12 @@ urlpatterns = [
     path("api/program-types/", views.get_program_types, name="program_types"),
     path("api/genders/", views.get_gender_options, name="genders"),
     path("api/religions/", views.get_religion_options, name="religions"),
+    
+    # Add these with your other URL patterns
+    path('api/email/send-custom/', views.send_custom_email_view, name='send_custom_email'),
+    path('api/email/send-grade/', views.send_grade_email, name='send_grade_email'),
+    path('api/email/send-document/', views.send_document_email, name='send_document_email'),
+    
     # ============== USER ROLE MANAGEMENT API ==============
     path("api/user/role/", views.get_current_user_role, name="current_user_role"),
     path("api/user/roles/", views.get_all_user_roles, name="all_user_roles"),

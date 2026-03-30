@@ -1,3 +1,8 @@
+# Add these with your other imports at the top of views.py
+from django.core.mail import EmailMessage, EmailMultiAlternatives
+from django.template.loader import render_to_string
+from django.utils.html import strip_tags
+import mimetypes
 from django.shortcuts import render, redirect
 from django.contrib.auth import logout, login, authenticate
 from django.contrib.auth.decorators import login_required
@@ -58,6 +63,52 @@ import calendar
 from collections import defaultdict
 from django_countries import countries
 
+
+# ============== EMAIL HELPER FUNCTION ==============
+def send_custom_email(subject, message, recipient_list, attachment_path=None, attachment_name=None, html_message=None, cc_list=None):
+    """
+    Send custom email with optional file attachment and custom message
+    
+    Args:
+        subject: Email subject
+        message: Plain text message (can include custom user message)
+        recipient_list: List of recipient emails
+        attachment_path: Path to file to attach (optional)
+        attachment_name: Custom name for attachment (optional)
+        html_message: HTML version of message (optional)
+        cc_list: List of CC recipients (optional)
+    """
+    try:
+        if html_message:
+            email = EmailMultiAlternatives(
+                subject=subject,
+                body=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=recipient_list if isinstance(recipient_list, list) else [recipient_list],
+                cc=cc_list or [],
+            )
+            email.attach_alternative(html_message, "text/html")
+        else:
+            email = EmailMessage(
+                subject=subject,
+                body=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=recipient_list if isinstance(recipient_list, list) else [recipient_list],
+                cc=cc_list or [],
+            )
+        
+        # Attach file if provided
+        if attachment_path and os.path.exists(attachment_path):
+            with open(attachment_path, 'rb') as file:
+                file_name = attachment_name or os.path.basename(attachment_path)
+                email.attach(file_name, file.read())
+        
+        # Send email
+        email.send(fail_silently=False)
+        return True, "Email sent successfully"
+        
+    except Exception as e:
+        return False, str(e)
 
 # ============== LOGOUT VIEW ==============
 def logout_view(request):
@@ -5200,6 +5251,436 @@ def update_role_permissions(request):
         import traceback
 
         traceback.print_exc()
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+# ============== EMAIL SENDING VIEWS ==============
+# Add these before the helper functions (calculate_progress, calculate_cgpa, etc.)
+
+@login_required
+@require_http_methods(["POST"])
+@csrf_exempt
+def send_custom_email_view(request):
+    """
+    Send custom email to any recipient with optional attachment and custom message
+    Expected JSON payload:
+    {
+        "recipient_email": "user@gmail.com",
+        "subject": "Email Subject",
+        "custom_message": "Your custom message here",
+        "attachment_id": "optional-document-id",
+        "cc_emails": ["cc1@gmail.com", "cc2@gmail.com"]  # optional
+    }
+    """
+    try:
+        data = json.loads(request.body)
+        
+        recipient_email = data.get('recipient_email')
+        subject = data.get('subject')
+        custom_message = data.get('custom_message', '')
+        attachment_id = data.get('attachment_id')
+        cc_emails = data.get('cc_emails', [])
+        
+        # Validate required fields
+        if not recipient_email:
+            return JsonResponse({"error": "Recipient email is required"}, status=400)
+        if not subject:
+            return JsonResponse({"error": "Subject is required"}, status=400)
+        
+        # Get sender name from request user
+        sender_name = f"{request.user.first_name} {request.user.last_name}".strip()
+        if not sender_name:
+            sender_name = request.user.username
+        
+        # Check if attachment is provided
+        attachment_path = None
+        attachment_name = None
+        if attachment_id:
+            try:
+                document = DepartmentDocument.objects.get(id=attachment_id)
+                if document.file and os.path.exists(document.file.path):
+                    attachment_path = document.file.path
+                    attachment_name = document.title
+            except DepartmentDocument.DoesNotExist:
+                pass  # Continue without attachment
+        
+        # Build HTML email with custom message
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }}
+                .container {{ max-width: 600px; margin: 0 auto; background: #fff; }}
+                .header {{ background: linear-gradient(135deg, #1e3a8a, #2563eb); color: white; padding: 30px 20px; text-align: center; }}
+                .header h2 {{ margin: 0 0 5px 0; font-size: 24px; }}
+                .header h3 {{ margin: 0; font-size: 16px; font-weight: normal; opacity: 0.9; }}
+                .content {{ padding: 30px; background: #f8fafc; }}
+                .message-box {{ background: white; padding: 20px; border-radius: 12px; margin: 20px 0; border-left: 4px solid #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }}
+                .message-box p {{ margin: 0 0 10px 0; }}
+                .message-box p:last-child {{ margin-bottom: 0; }}
+                .footer {{ text-align: center; padding: 20px; font-size: 12px; color: #6b7280; background: #f1f5f9; border-top: 1px solid #e2e8f0; }}
+                .footer p {{ margin: 5px 0; }}
+                .badge {{ display: inline-block; background: #e0e7ff; color: #1e40af; padding: 4px 12px; border-radius: 20px; font-size: 12px; margin-top: 10px; }}
+                .attachment-note {{ background: #fef3c7; padding: 10px 15px; border-radius: 8px; margin-top: 15px; font-size: 13px; color: #92400e; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2>University of Liberia</h2>
+                    <h3>Department of Political Science</h3>
+                </div>
+                <div class="content">
+                    <p>Dear Recipient,</p>
+                    <div class="message-box">
+                        {custom_message.replace(chr(10), '<br>') if custom_message else '<p><em>No additional message provided.</em></p>'}
+                    </div>
+                    {'<div class="attachment-note"><strong>📎 Attachment:</strong> ' + attachment_name + ' is attached to this email.</div>' if attachment_name else ''}
+                    <p style="margin-top: 20px;">Best regards,<br><strong>{sender_name}</strong><br>Department of Political Science</p>
+                    <div class="badge">Official Communication</div>
+                </div>
+                <div class="footer">
+                    <p>University of Liberia, Department of Political Science</p>
+                    <p>Capitol Hill, Monrovia, Liberia | Tel: +231 777 123 456</p>
+                    <p>This is an automated message from the Departmental System. Please do not reply directly to this email.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Plain text version (without HTML)
+        plain_message = f"""
+        UNIVERSITY OF LIBERIA - DEPARTMENT OF POLITICAL SCIENCE
+        {'=' * 60}
+        
+        Subject: {subject}
+        
+        Message:
+        {custom_message if custom_message else 'No additional message provided.'}
+        
+        {'Attachment: ' + attachment_name if attachment_name else ''}
+        
+        Regards,
+        {sender_name}
+        Department of Political Science
+        University of Liberia
+        """
+        
+        # Send the email
+        success, result_message = send_custom_email(
+            subject=subject,
+            message=plain_message,
+            recipient_list=[recipient_email],
+            attachment_path=attachment_path,
+            attachment_name=attachment_name,
+            html_message=html_content,
+            cc_list=cc_emails if cc_emails else None
+        )
+        
+        # Log the email (optional - if you have EmailLog model)
+        try:
+            from .models import EmailLog
+            EmailLog.objects.create(
+                email_type='custom',
+                subject=subject,
+                recipient=recipient_email,
+                cc_recipients=','.join(cc_emails) if cc_emails else None,
+                attachment_names=attachment_name if attachment_name else None,
+                status='sent' if success else 'failed',
+                error_message=result_message if not success else None,
+                sent_by=request.user
+            )
+        except:
+            pass  # EmailLog model might not exist yet
+        
+        if success:
+            return JsonResponse({
+                "success": True,
+                "message": f"Email sent successfully to {recipient_email}",
+                "recipient": recipient_email,
+                "subject": subject
+            })
+        else:
+            return JsonResponse({
+                "success": False,
+                "error": result_message
+            }, status=500)
+            
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON data"}, status=400)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+@login_required
+@require_http_methods(["POST"])
+@csrf_exempt
+def send_grade_email(request):
+    """
+    Send grade notification email to a student with custom message
+    Expected JSON payload:
+    {
+        "student_id": "student-uuid",
+        "course_id": "course-uuid", 
+        "grade": "A",
+        "custom_message": "Your custom message here",
+        "semester": "semester1",
+        "year": 2026
+    }
+    """
+    try:
+        data = json.loads(request.body)
+        
+        student_id = data.get('student_id')
+        course_id = data.get('course_id')
+        grade = data.get('grade')
+        custom_message = data.get('custom_message', '')
+        semester = data.get('semester', 'semester1')
+        year = data.get('year', timezone.now().year)
+        
+        # Get student and course
+        try:
+            student = Student.objects.get(id=student_id)
+            course = Course.objects.get(id=course_id)
+        except (Student.DoesNotExist, Course.DoesNotExist) as e:
+            return JsonResponse({"error": str(e)}, status=404)
+        
+        if not student.email:
+            return JsonResponse({"error": "Student has no email address"}, status=400)
+        
+        semester_display = "Semester 1" if semester == "semester1" else "Semester 2"
+        
+        # Get sender name
+        sender_name = f"{request.user.first_name} {request.user.last_name}".strip()
+        if not sender_name:
+            sender_name = request.user.username
+        
+        # Build HTML email
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
+                .container {{ max-width: 600px; margin: 0 auto; }}
+                .header {{ background: #2563eb; color: white; padding: 20px; text-align: center; }}
+                .content {{ padding: 20px; background: #f9fafb; }}
+                .grade-box {{ background: white; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #2563eb; }}
+                .grade {{ font-size: 24px; font-weight: bold; color: #2563eb; }}
+                .custom-message {{ background: #f0fdf4; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #10b981; }}
+                .footer {{ text-align: center; padding: 20px; font-size: 12px; color: #6b7280; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2>University of Liberia</h2>
+                    <h3>Department of Political Science</h3>
+                </div>
+                <div class="content">
+                    <h3>Dear {student.name},</h3>
+                    <p>Your grade for the following course has been recorded:</p>
+                    <div class="grade-box">
+                        <strong>Course:</strong> {course.code} - {course.title}<br>
+                        <strong>Semester:</strong> {semester_display} {year}<br>
+                        <strong>Grade:</strong> <span class="grade">{grade}</span>
+                    </div>
+                    {'<div class="custom-message"><strong>📝 Message from Department:</strong><br>' + custom_message.replace(chr(10), '<br>') + '</div>' if custom_message else ''}
+                    <p>Please log in to the portal to view your complete academic record.</p>
+                    <p>Best regards,<br><strong>{sender_name}</strong><br>Department of Political Science</p>
+                </div>
+                <div class="footer">
+                    <p>University of Liberia, Department of Political Science<br>Capitol Hill, Monrovia, Liberia</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        plain_message = f"""
+        UNIVERSITY OF LIBERIA - DEPARTMENT OF POLITICAL SCIENCE
+        
+        Dear {student.name},
+        
+        Your grade for {course.code} - {course.title} has been recorded:
+        
+        Course: {course.code} - {course.title}
+        Semester: {semester_display} {year}
+        Grade: {grade}
+        
+        {'Message from Department: ' + custom_message if custom_message else ''}
+        
+        Please log in to the portal to view your complete academic record.
+        
+        Regards,
+        {sender_name}
+        Department of Political Science
+        """
+        
+        # Try to generate and attach PDF report
+        attachment_path = None
+        try:
+            pdf_response = export_student_pdf(request, student_id)
+            if pdf_response.status_code == 200:
+                temp_pdf_path = os.path.join(settings.MEDIA_ROOT, f'temp_{student.student_id}_report.pdf')
+                with open(temp_pdf_path, 'wb') as f:
+                    f.write(pdf_response.content)
+                attachment_path = temp_pdf_path
+        except:
+            pass
+        
+        # Send email
+        success, result_message = send_custom_email(
+            subject=f"Grade Notification: {course.code} - {grade}",
+            message=plain_message,
+            recipient_list=[student.email],
+            attachment_path=attachment_path,
+            attachment_name=f"{student.student_id}_academic_report.pdf",
+            html_message=html_content
+        )
+        
+        # Clean up temp file
+        if attachment_path and os.path.exists(attachment_path):
+            os.remove(attachment_path)
+        
+        if success:
+            return JsonResponse({
+                "success": True,
+                "message": f"Grade notification sent to {student.email}"
+            })
+        else:
+            return JsonResponse({"error": result_message}, status=500)
+            
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+
+@login_required
+@require_http_methods(["POST"])
+@csrf_exempt
+def send_document_email(request):
+    """
+    Send a document via email with custom message
+    Expected JSON payload:
+    {
+        "document_id": "document-uuid",
+        "recipient_email": "user@gmail.com",
+        "custom_message": "Your custom message here",
+        "recipient_name": "Student Name"  # optional
+    }
+    """
+    try:
+        data = json.loads(request.body)
+        
+        document_id = data.get('document_id')
+        recipient_email = data.get('recipient_email')
+        custom_message = data.get('custom_message', '')
+        recipient_name = data.get('recipient_name', 'Recipient')
+        
+        if not document_id:
+            return JsonResponse({"error": "Document ID is required"}, status=400)
+        if not recipient_email:
+            return JsonResponse({"error": "Recipient email is required"}, status=400)
+        
+        # Get document
+        try:
+            document = DepartmentDocument.objects.get(id=document_id)
+        except DepartmentDocument.DoesNotExist:
+            return JsonResponse({"error": "Document not found"}, status=404)
+        
+        if not document.file or not os.path.exists(document.file.path):
+            return JsonResponse({"error": "Document file not found"}, status=404)
+        
+        # Get sender name
+        sender_name = f"{request.user.first_name} {request.user.last_name}".strip()
+        if not sender_name:
+            sender_name = request.user.username
+        
+        # Build HTML email
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; }}
+                .container {{ max-width: 600px; margin: 0 auto; }}
+                .header {{ background: #2563eb; color: white; padding: 20px; text-align: center; }}
+                .content {{ padding: 20px; background: #f9fafb; }}
+                .document-info {{ background: white; padding: 15px; border-radius: 8px; margin: 15px 0; }}
+                .custom-message {{ background: #fef3c7; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #f59e0b; }}
+                .footer {{ text-align: center; padding: 20px; font-size: 12px; color: #6b7280; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2>University of Liberia</h2>
+                    <h3>Department of Political Science</h3>
+                </div>
+                <div class="content">
+                    <h3>Dear {recipient_name},</h3>
+                    <p>The following document has been shared with you:</p>
+                    <div class="document-info">
+                        <strong>Title:</strong> {document.title}<br>
+                        <strong>Author:</strong> {document.author}<br>
+                        <strong>Type:</strong> {document.document_type.upper()}<br>
+                        <strong>Category:</strong> {document.category or 'General'}
+                    </div>
+                    {'<div class="custom-message"><strong>📝 Message from {sender_name}:</strong><br>' + custom_message.replace(chr(10), '<br>') + '</div>' if custom_message else ''}
+                    <p>Please find the document attached to this email.</p>
+                    <p>Best regards,<br><strong>{sender_name}</strong><br>Department of Political Science</p>
+                </div>
+                <div class="footer">
+                    <p>University of Liberia, Department of Political Science<br>Capitol Hill, Monrovia, Liberia</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        plain_message = f"""
+        UNIVERSITY OF LIBERIA - DEPARTMENT OF POLITICAL SCIENCE
+        
+        Dear {recipient_name},
+        
+        The following document has been shared with you:
+        
+        Title: {document.title}
+        Author: {document.author}
+        Type: {document.document_type.upper()}
+        Category: {document.category or 'General'}
+        
+        {'Message from ' + sender_name + ': ' + custom_message if custom_message else ''}
+        
+        Please find the document attached to this email.
+        
+        Regards,
+        {sender_name}
+        Department of Political Science
+        """
+        
+        # Send email with document attachment
+        success, result_message = send_custom_email(
+            subject=f"Document Shared: {document.title}",
+            message=plain_message,
+            recipient_list=[recipient_email],
+            attachment_path=document.file.path,
+            attachment_name=f"{document.title}.{document.file.path.split('.')[-1]}",
+            html_message=html_content
+        )
+        
+        if success:
+            return JsonResponse({
+                "success": True,
+                "message": f"Document sent to {recipient_email}"
+            })
+        else:
+            return JsonResponse({"error": result_message}, status=500)
+            
+    except Exception as e:
         return JsonResponse({"error": str(e)}, status=400)
 
 
